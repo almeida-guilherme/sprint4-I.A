@@ -4,6 +4,8 @@ Assistente técnico-operacional para eletropostos GoodWe, reconstruído em
 **LangGraph** com memória por sessão, RAG como ferramenta, guardrails
 determinísticos e suíte de avaliação automatizada.
 
+Sprint 3: github.com/almeida-guilherme/sprint3-I.A
+
 ## Estrutura
 
 ```
