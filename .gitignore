@@ -1,0 +1,13 @@
+# credenciais — NUNCA versionar
+.env
+.env.*
+!.env.example
+
+# resultados de execução (gerados localmente)
+resultados/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
