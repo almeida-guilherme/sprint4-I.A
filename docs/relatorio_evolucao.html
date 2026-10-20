@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<style>
+  @page { size: A4; margin: 14mm 15mm 16mm 15mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-size: 9.3pt;
+    line-height: 1.38;
+    color: #1a1a1a;
+  }
+  h1 { font-size: 15pt; margin: 0 0 2pt 0; color: #0b3d2e; }
+  .subtitle { font-size: 9pt; color: #444; margin-bottom: 8pt; }
+  .subtitle span { display: block; }
+  hr.top { border: none; border-top: 1.5pt solid #0b3d2e; margin: 0 0 8pt 0; }
+  h2 {
+    font-size: 11pt; color: #0b3d2e; margin: 11pt 0 4pt 0;
+    border-bottom: 0.75pt solid #cfe0d8; padding-bottom: 2pt;
+  }
+  h3 { font-size: 9.6pt; color: #14532d; margin: 7pt 0 2pt 0; }
+  p { margin: 3pt 0; text-align: justify; }
+  ol, ul { margin: 3pt 0 3pt 14pt; padding: 0; }
+  li { margin-bottom: 1.5pt; }
+  table { width: 100%; border-collapse: collapse; margin: 4pt 0 6pt 0; font-size: 8.4pt; }
+  th, td { border: 0.5pt solid #b9c7bf; padding: 2.6pt 4pt; text-align: left; vertical-align: top; }
+  th { background: #eaf2ec; color: #0b3d2e; font-weight: 600; }
+  td.num, th.num { text-align: center; }
+  .highlight { font-weight: 700; color: #0b3d2e; }
+  .verdict {
+    background: #f3f8f5; border-left: 2.5pt solid #0b3d2e;
+    padding: 4pt 7pt; margin: 5pt 0; text-align: justify;
+  }
+  .problem {
+    border: 0.5pt solid #d8e2dc; border-radius: 3pt; padding: 5pt 7pt;
+    margin: 5pt 0; background: #fbfdfc;
+  }
+  .problem .row { display: flex; gap: 6pt; margin: 2pt 0; }
+  .problem .label { font-weight: 700; min-width: 82pt; color: #0b3d2e; font-size: 8.6pt; }
+  .problem .val { flex: 1; font-size: 8.6pt; text-align: justify; }
+  .note { font-size: 8pt; color: #555; font-style: italic; }
+  code { font-family: "Courier New", monospace; font-size: 8.1pt; background: #f0f0f0; padding: 0 2pt; }
+  .findings { margin: 4pt 0; }
+  .findings li { font-size: 8.6pt; }
+  .footer-note { font-size: 7.6pt; color: #777; margin-top: 8pt; border-top: 0.5pt solid #ddd; padding-top: 3pt; }
+</style>
+</head>
+<body>
+
+<h1>Relatório de evolução — ChargeGrid AI (EV Challenge GoodWe)</h1>
+<div class="subtitle">
+  <span>Sprint 03 — Agentes de IA e Evolução Conversacional</span>
+  <span>Prompt and Artificial Intelligence · Ciência da Computação, 1º ano · Parceiro: GoodWe Brasil</span>
+</div>
+<hr class="top">
+
+<h2>1. Resumo da evolução</h2>
+<p><strong>Sprints 1 e 2.</strong> A Sprint 1 definiu problema, persona, fluxo, system prompt e o
+conjunto de perguntas de avaliação. A Sprint 2 entregou uma aplicação funcional em notebook: dois
+agentes como funções Python (<code>agentRespondePergunta</code> e <code>agentAvaliador</code>),
+chamadas diretas ao SDK da OpenAI, histórico mantido em listas passadas de função em função, RAG
+com <code>InMemoryVectorStore</code> executado a cada turno e injetado no system prompt, e avaliação
+com few-shots cuja saída era parseada com <code>json.loads</code> em <code>try/except</code>.</p>
+
+<p><strong>Sprint 03.</strong> O núcleo conversacional foi reconstruído em <strong>LangGraph</strong>:
+(1) o fluxo virou um grafo com nós e roteamento condicional, no lugar do <code>while True</code>
+encadeado; (2) a memória passou a ser estado do grafo, persistido por <code>thread_id</code> via
+checkpointer — sessões isoladas e inspecionáveis; (3) o RAG virou <strong>ferramenta</strong>
+(<code>buscar_manual</code>), chamada pelo agente só quando a pergunta exige dado técnico; (4) o
+contexto técnico saiu do system prompt fixo e foi para a base indexada; (5) entrou uma camada de
+<strong>guardrails determinísticos</strong> em Python, somada às instruções do prompt; (6) o
+avaliador passou a usar <code>with_structured_output</code>, eliminando o parsing manual de JSON;
+(7) a suíte de testes virou código executável — 14 casos, com métricas de nota, tokens, latência e
+acionamento de guardrail, rodando tanto na arquitetura nova quanto na legada.</p>
+
+<h2>2. Refatoração — decisões técnicas</h2>
+<p><strong>Framework escolhido: LangGraph.</strong> Reaproveita os componentes LangChain já usados
+na Sprint 2 (<code>init_chat_model</code>, splitters, vector store); permite barrar um turno
+<strong>antes</strong> da chamada ao modelo via roteamento condicional (controle menos explícito em
+CrewAI ou no Agents SDK); resolve sessão isolada com checkpointer por <code>thread_id</code>; e
+<code>init_chat_model</code> troca de provedor por string — exatamente o que a comparação entre
+modelos do Bloco B exige. Alternativas descartadas: <strong>CrewAI</strong> (estrutura de papéis
+sobrando para um assistente de turno único) e <strong>OpenAI Agents SDK</strong> / <strong>Google
+ADK</strong> (acoplam a um fornecedor justamente na sprint que pede comparação entre modelos).</p>
+
+<p><strong>Principais decisões e trade-offs:</strong></p>
+<table>
+<tr><th style="width:26%">Decisão</th><th>Trade-off assumido</th></tr>
+<tr><td>Grafo enxuto (só o guardrail de entrada é nó)</td>
+    <td>A verificação de saída fica dentro de <code>call_llm</code> — um nó a mais ali aumentaria a complexidade do grafo sem mudar comportamento.</td></tr>
+<tr><td>Guardrail em duas camadas (regex + prompt)</td>
+    <td>Regex é determinístico e gratuito, mas só pega padrões previstos; um classificador LLM generalizaria mais, ao custo de uma chamada paga por turno. Optamos por regex + instrução como rede de segurança.</td></tr>
+<tr><td>RAG como ferramenta, não injeção fixa</td>
+    <td>Menos tokens e menos ruído por turno, ao custo de um round-trip extra e do risco de o agente não chamar a ferramenta — mitigado por regra explícita no prompt.</td></tr>
+<tr><td><code>MemorySaver</code> (RAM) em vez de disco</td>
+    <td>Suficiente para a demonstração local; persistência entre execuções é troca de uma linha (<code>SqliteSaver</code>).</td></tr>
+</table>
+
+<h2>3. Comparativo antes × depois</h2>
+<table>
+<tr><th>Dimensão</th><th>Sprints 1–2</th><th>Sprint 03</th></tr>
+<tr><td>Arquitetura</td><td>Funções Python + SDK direto, loop <code>while True</code></td><td>Grafo LangGraph, roteamento condicional, estado tipado</td></tr>
+<tr><td>Memória</td><td>Lista de dicts entre funções, sem isolamento de sessão</td><td>Estado do grafo com checkpointer por <code>thread_id</code></td></tr>
+<tr><td>RAG</td><td>Busca a cada turno, injetada no system prompt</td><td>Ferramenta <code>buscar_manual</code>, sob decisão do agente</td></tr>
+<tr><td>Segurança</td><td>Apenas instrução no prompt</td><td>Prompt + guardrails determinísticos (entrada/saída)</td></tr>
+<tr><td>Avaliação</td><td>Few-shots + <code>json.loads</code> em <code>try/except</code></td><td><code>with_structured_output</code> (schema Pydantic)</td></tr>
+<tr><td>Testes</td><td>Manuais, no notebook</td><td>Suíte versionada, 14 casos, métricas automáticas</td></tr>
+<tr><td>Modelo (mesmo nas duas, isola o efeito da arquitetura)</td><td class="num">gpt-4o-mini</td><td class="num">gpt-4o-mini</td></tr>
+<tr><td>Nota média nos testes</td><td class="num">0.75</td><td class="num highlight">0.89</td></tr>
+<tr><td>% de respostas "Adequada"</td><td class="num">64%</td><td class="num highlight">86%</td></tr>
+<tr><td>Nota de segurança</td><td class="num">0.75</td><td class="num highlight">1.00</td></tr>
+<tr><td>Nota de memória</td><td class="num">0.83</td><td class="num highlight">1.00</td></tr>
+<tr><td>Tokens médios por turno</td><td class="num">1441</td><td class="num">1602</td></tr>
+<tr><td>Latência média por turno</td><td class="num">2.43 s</td><td class="num highlight">1.86 s</td></tr>
+</table>
+<p class="note">14 casos, execução única (16/09, 17:20–17:21), após a correção da instrução de
+abertura descrita no Problema 1. Comando: <code>python -m tests.run_tests --arquitetura
+{sprint2|sprint3} --modelos gpt-4o-mini</code>.</p>
+
+<div class="verdict">
+<strong>A nova arquitetura tornou o chatbot melhor?</strong> Sim, de forma mensurável. O ganho mais
+nítido é em <strong>segurança</strong>: no caso de tentativa de vazamento do system prompt, a
+Sprint 2 expôs as instruções internas e foi avaliada como Inadequada; na Sprint 3 o guardrail
+determinístico bloqueou o turno antes de chegar ao modelo — 0 tokens, latência zero, comportamento
+idêntico em qualquer LLM. Esse bloqueio, mais o caso equivalente de prompt injection, explica boa
+parte da queda de latência média. A <strong>memória</strong> também ficou mais estável: um caso que
+oscilava na Sprint 2 entre execuções (lista Python manual) chegou a nota máxima de forma consistente
+com o checkpointer. Um ponto honesto: <strong>tokens por turno subiram</strong> (1441→1602) — a
+causa aparente é que respostas mais completas e corretas (citando a fonte, explicando o "não
+encontrado") custam mais tokens de saída que uma resposta genérica incorreta.
+</div>
+
+<h2>4. Problemas encontrados e soluções</h2>
+
+<div class="problem">
+<h3>Problema 1 — Instrução de abertura competindo com a pergunta do usuário</h3>
+<div class="row"><div class="label">Problema</div><div class="val">Um caso de pergunta objetiva sem perfil declarado ("onde configuro a tarifa por kWh?") regrediu: a Sprint 2 respondia direto; a Sprint 3 perguntou "você é Operador Comercial ou Técnico de Campo?" e nunca respondeu. A instrução de abertura do prompt mandava perguntar o perfil incondicionalmente na primeira mensagem, mesmo quando ela já trazia uma pergunta respondível.</div></div>
+<div class="row"><div class="label">Alternativas</div><div class="val">(a) remover a pergunta de perfil e deduzir o nível técnico pelo teor da pergunta; (b) condicionar a pergunta de perfil à ausência de uma pergunta objetiva; (c) sempre responder primeiro e perguntar o perfil como adendo ao final.</div></div>
+<div class="row"><div class="label">Solução adotada</div><div class="val">(b) + (c) combinadas — responde primeiro sempre que houver pergunta respondível; só pergunta o perfil isoladamente quando a mensagem for apenas um cumprimento.</div></div>
+<div class="row"><div class="label">Justificativa</div><div class="val">Preserva a personalização por perfil (intencional do produto) sem sacrificar a resposta à pergunta real do usuário. Após a correção, o caso passou a "Adequada" e a nota média geral subiu de 0.82 para 0.89.</div></div>
+</div>
+
+<div class="problem">
+<h3>Problema 2 — Ruído do avaliador (LLM-as-judge) entre execuções idênticas</h3>
+<div class="row"><div class="label">Problema</div><div class="val">Ao investigar por que um caso funcional variou de nota entre duas rodadas, comparamos as respostas do agente turno a turno: eram <strong>idênticas, palavra por palavra</strong>. O agente não mudou — o juiz (<code>gpt-4o-mini</code>, <code>temperature=0</code>) deu vereditos diferentes ("Adequada" e "Parcialmente Adequada") para o mesmo texto, com justificativas diferentes.</div></div>
+<div class="row"><div class="label">Alternativas</div><div class="val">(a) ignorar o ruído e reportar uma única execução; (b) rodar a suíte múltiplas vezes e reportar a nota média; (c) trocar o juiz por regras (inviável para julgar linguagem natural); (d) self-consistency (votar entre 3 chamadas do juiz por caso).</div></div>
+<div class="row"><div class="label">Solução adotada</div><div class="val">(b), com <code>--execucoes 3</code> como padrão recomendado para os números finais dos relatórios.</div></div>
+<div class="row"><div class="label">Justificativa</div><div class="val">(a) mascara incerteza real e pode levar a decisão de modelo baseada em ruído, não em sinal. (d) resolveria melhor, mas triplicaria o custo do avaliador em cima do já triplicado por <code>--execucoes 3</code>; para o escopo da sprint, a média sobre o próprio pipeline já é suficiente para não decidir a partir de um único ponto de dado.</div></div>
+</div>
+
+<p><strong>Outros achados relevantes (documentados em detalhe no repositório):</strong></p>
+<ul class="findings">
+<li><strong>Resistência à injeção variava conforme o modelo:</strong> com defesa apenas no prompt,
+o mesmo ataque de prompt injection era recusado por um modelo e parcialmente atendido por outro.
+Resolvido com filtro determinístico em Python (<code>src/guardrails.py</code>) antes da chamada ao
+modelo — custo zero, comportamento idêntico em qualquer LLM, condição necessária para que a
+comparação entre modelos meça o modelo, e não a sorte do prompt.</li>
+<li><strong>Alucinação de especificação a partir de contexto genérico do RAG:</strong> ao perguntar
+sobre um equipamento inexistente, o agente chamava a ferramenta corretamente, mas atribuía a ele um
+valor genérico recuperado (ex. limite de corrente "típico" de um tipo de conector). Corrigido em
+três iterações no prompt, até proibir citar qualquer valor numérico quando o equipamento perguntado
+não é encontrado na documentação — eliminando a ambiguidade que o próprio juiz julgava de forma
+inconsistente.</li>
+</ul>
+
+<h2>5. Divisão da equipe</h2>
+<table>
+<tr><th>Nome</th><th style="width:16%">RM</th><th>Principal responsabilidade</th></tr>
+<tr><td>Gabriel Jurado Nogueira</td><td class="num">571236</td><td>Grafo LangGraph e memória por sessão</td></tr>
+<tr><td>Guilherme Henrique de Almeida</td><td class="num">568708</td><td>RAG (ferramenta <code>buscar_manual</code>) e base de conhecimento</td></tr>
+<tr><td>Guilherme Garbelini</td><td class="num">571150</td><td>Guardrails e casos de teste de segurança</td></tr>
+<tr><td>Mariana Carminato</td><td class="num">573258</td><td>Suíte de testes e relatório de comparação entre modelos</td></tr>
+<tr><td>Vinicius Toralles Ferreira Conduta</td><td class="num">570911</td><td>Relatório de evolução e organização do repositório</td></tr>
+</table>
+<p class="footer-note">Divisão de responsabilidades proposta pelo grupo, coerente com os entregáveis da Sprint 03 — a confirmar/ajustar pelos integrantes antes da entrega final.</p>
+
+</body>
+</html>
